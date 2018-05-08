@@ -19,6 +19,7 @@ type BlockDev struct {
 	Partition bool       `json:"partition,omitempty"`
 	Mount     MountInfo  `json:"mount,omitempty"`
 	UUID      string     `json:"uuid,omitempty"`
+	Sectors   uint64     `json:"sectors,omitempty"`
 	Size      uint64     `json:"size,omitempty"`
 	SubDev    []BlockDev `json:"subdev,omitempty"`
 	Holder    []string   `json:"holder_of,omitempty"`
@@ -29,16 +30,17 @@ type BlockDev struct {
 type MountInfo struct {
 	MountPoint string `json:"mount_point,omitempty"`
 	FSType     string `json:"filesystem,omitempty"`
-	Options    string `json:"mount_options,omitempty"`
+	// Mount options used to mount this device
+	Options string `json:"mount_options,omitempty"`
 }
 
-const sysClassBlock = "/sys/block"
+const sysBlockPath = "/sys/block"
 
 func GetPartitionStats() []BlockDev {
 	partStats := make([]BlockDev, 0)
-	if dirSysBlk, err := os.Lstat(sysClassBlock); err == nil &&
+	if dirSysBlk, err := os.Lstat(sysBlockPath); err == nil &&
 		dirSysBlk.IsDir() {
-		fi, _ := os.Open(sysClassBlock)
+		fi, _ := os.Open(sysBlockPath)
 		blockDevs, _ := fi.Readdir(0)
 		for _, blk := range blockDevs {
 			var blkDev BlockDev
@@ -46,7 +48,7 @@ func GetPartitionStats() []BlockDev {
 				partStats = append(partStats, blkDev)
 			}
 		}
-		matchUUIDs(partStats, checkUUIDs())
+		matchUUIDs(partStats, getUUIDs())
 		matchMounts(partStats, checkMounts())
 	}
 	return partStats
@@ -56,10 +58,10 @@ func (blkDev *BlockDev) getBlockDevice(blk os.FileInfo, parent os.FileInfo) bool
 	var fullpath string
 	var dev string
 	if parent != nil {
-		fullpath = path.Join(sysClassBlock, parent.Name(), blk.Name())
+		fullpath = path.Join(sysBlockPath, parent.Name(), blk.Name())
 		dev = fullpath
 	} else {
-		fullpath = path.Join(sysClassBlock, blk.Name())
+		fullpath = path.Join(sysBlockPath, blk.Name())
 		dev, _ = os.Readlink(fullpath)
 	}
 
@@ -74,7 +76,7 @@ func (blkDev *BlockDev) getBlockDevice(blk os.FileInfo, parent os.FileInfo) bool
 	if parent != nil {
 		fi, _ = os.Open(dev)
 	} else {
-		fi, _ = os.Open(path.Join(sysClassBlock, dev))
+		fi, _ = os.Open(path.Join(sysBlockPath, dev))
 	}
 	subFiles, err := fi.Readdir(0)
 	if err != nil {
@@ -97,9 +99,10 @@ func (blkDev *BlockDev) getBlockDevice(blk os.FileInfo, parent os.FileInfo) bool
 	}
 
 	blkDev.Name = blk.Name()
-	blkSize, err := strconv.Atoi(si.SlurpFile(path.Join(fullpath, "size")))
+	blkSec, err := strconv.Atoi(si.SlurpFile(path.Join(fullpath, "size")))
 	if err == nil {
-		blkDev.Size = uint64(blkSize)
+		blkDev.Sectors = uint64(blkSec)
+		blkDev.Size = blkDev.Sectors << 9
 	}
 
 	slaves, holders := listDeps(blk.Name())
@@ -117,15 +120,17 @@ func (blkDev *BlockDev) getBlockDevice(blk os.FileInfo, parent os.FileInfo) bool
 	return true
 }
 
+// listDeps check and return the dependency relationship of partitions
 func listDeps(blk string) ([]os.FileInfo, []os.FileInfo) {
-	fiSlaves, _ := os.Open(path.Join(sysClassBlock, blk, "slaves"))
-	fiHolders, _ := os.Open(path.Join(sysClassBlock, blk, "holders"))
+	fiSlaves, _ := os.Open(path.Join(sysBlockPath, blk, "slaves"))
+	fileInfoHolders, _ := os.Open(path.Join(sysBlockPath, blk, "holders"))
 	slaves, _ := fiSlaves.Readdir(0)
-	holders, _ := fiHolders.Readdir(0)
+	holders, _ := fileInfoHolders.Readdir(0)
 	return slaves, holders
 }
 
-func checkUUIDs() map[string]string {
+// getUUIDs get UUIDs for partitions and put them in a map to device names
+func getUUIDs() map[string]string {
 	sysDiskUUID := "/dev/disk/by-uuid"
 	fi, err := os.Open(sysDiskUUID)
 	if err != nil {
@@ -150,6 +155,7 @@ func checkUUIDs() map[string]string {
 	return diskByUUID
 }
 
+// matchUUIDs pair UUIDs and their other device infomation by names
 func matchUUIDs(devs []BlockDev, diskByUUID map[string]string) {
 	if len(devs) < 1 || diskByUUID == nil {
 		return
@@ -167,6 +173,7 @@ func matchUUIDs(devs []BlockDev, diskByUUID map[string]string) {
 	}
 }
 
+// checkMounts get meta info of mount points and put them in a map to device names
 func checkMounts() map[string]MountInfo {
 	raw, err := ioutil.ReadFile("/proc/mounts")
 	if err != nil {
@@ -176,20 +183,20 @@ func checkMounts() map[string]MountInfo {
 	mountPoints := make(map[string]MountInfo)
 
 	for _, line := range rawLines {
-		_tmp := strings.Split(line, " ")
-		if len(_tmp) < 6 {
+		mountInfo := strings.Split(line, " ")
+		if len(mountInfo) < 6 {
 			continue
 		}
 		var mp MountInfo
-		mp.MountPoint = _tmp[1]
-		mp.FSType = _tmp[2]
-		mp.Options = _tmp[3]
-		_devPath := strings.Split(_tmp[0], "/")
-		if len(_devPath) < 1 {
+		mp.MountPoint = mountInfo[1]
+		mp.FSType = mountInfo[2]
+		mp.Options = mountInfo[3]
+		devPath := strings.Split(mountInfo[0], "/")
+		if len(devPath) < 1 {
 			continue
 		}
-		_devName := _devPath[len(_devPath)-1:][0]
-		mountPoints[_devName] = mp
+		devName := devPath[len(devPath)-1:][0]
+		mountPoints[devName] = mp
 	}
 
 	// check for swap partitions
@@ -203,22 +210,22 @@ func checkMounts() map[string]MountInfo {
 				line == "" {
 				continue
 			}
-			_tmp := strings.Fields(line)
-			_devPath := strings.Split(_tmp[0], "/")
-			if len(_devPath) < 1 {
+			devPath := strings.Split(strings.Fields(line)[0], "/")
+			if len(devPath) < 1 {
 				continue
 			}
 			var mp MountInfo
 			mp.MountPoint = "[SWAP]"
 			mp.FSType = "swap"
-			_devName := _devPath[len(_devPath)-1:][0]
-			mountPoints[_devName] = mp
+			devName := devPath[len(devPath)-1:][0]
+			mountPoints[devName] = mp
 		}
 	}
 
 	return mountPoints
 }
 
+// matchMounts pair mount point meta and their other device infomation by names
 func matchMounts(devs []BlockDev, mountPoints map[string]MountInfo) {
 	if len(devs) < 1 || mountPoints == nil {
 		return

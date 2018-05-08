@@ -41,21 +41,21 @@ func getTiKVVersion() TiKVMeta {
 
 	output := strings.Split(out.String(), "\n")
 	for _, line := range output {
-		_tmp := strings.Split(line, ":")
-		if len(_tmp) <= 1 {
+		info := strings.Split(line, ":")
+		if len(info) <= 1 {
 			continue
 		}
-		switch _tmp[0] {
+		switch info[0] {
 		case "Release Version":
-			tikvVer.ReleaseVer = strings.TrimSpace(_tmp[1])
+			tikvVer.ReleaseVer = strings.TrimSpace(info[1])
 		case "Git Commit Hash":
-			tikvVer.GitCommit = strings.TrimSpace(_tmp[1])
+			tikvVer.GitCommit = strings.TrimSpace(info[1])
 		case "Git Commit Branch":
-			tikvVer.GitBranch = strings.TrimSpace(_tmp[1])
+			tikvVer.GitBranch = strings.TrimSpace(info[1])
 		case "UTC Build Time":
-			tikvVer.BuildTime = strings.TrimSpace(strings.Join(_tmp[1:], ":"))
+			tikvVer.BuildTime = strings.TrimSpace(strings.Join(info[1:], ":"))
 		case "Rust Version":
-			tikvVer.RustVersion = strings.TrimSpace(_tmp[1])
+			tikvVer.RustVersion = strings.TrimSpace(info[1])
 		default:
 			continue
 		}

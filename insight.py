@@ -18,11 +18,15 @@
 # above, although Python 2 with version 2.7 and above may also work in
 # most circumstances, please use latest Python 3 when possible.
 
-import argparse
 import json
+import logging
 import os
 
-from measurement import perf, space, util
+from measurement import lsof
+from measurement import perf
+from measurement import space
+from measurement import util
+
 
 class Insight():
     # data output dir
@@ -35,6 +39,7 @@ class Insight():
     # data collected by `collector`
     collector_data = {}
     # collect data with `collector` and store it to disk
+
     def collector(self):
         # TODO: check existance of output dir
         # TODO: warn on non-empty output dir
@@ -44,6 +49,8 @@ class Insight():
         collector_exec = os.path.join(base_dir, "bin/collector")
 
         stdout, stderr = util.run_cmd(collector_exec)
+        if stderr:
+            logging.warning(str(stderr))
         try:
             self.collector_data = json.loads(stdout)
         except json.JSONDecodeError:
@@ -51,14 +58,15 @@ class Insight():
             return
         util.write_file(os.path.join(self.full_outdir, "collector.json"),
                         json.dumps(self.collector_data, indent=2))
-    
+
     def run_perf(self, args):
         if not args.perf:
             return
 
         # "--tidb-proc" has the highest priority
         if args.tidb_proc:
-            perf_proc = perf.format_proc_info(self.collector_data["proc_stats"])
+            perf_proc = perf.format_proc_info(
+                self.collector_data["proc_stats"])
             insight_perf = perf.InsightPerf(perf_proc, args)
         # parse pid list
         elif len(args.pid) > 0:
@@ -83,42 +91,28 @@ class Insight():
                 stdout, stderr = space.du_total(data_dir)
             if stdout:
                 util.write_file(os.path.join(self.full_outdir, "size-%s" % proc["pid"]),
-                            stdout)
+                                stdout)
             if stderr:
                 util.write_file(os.path.join(self.full_outdir, "size-%s.err" % proc["pid"]),
-                            stderr)
+                                stderr)
 
-def parse_opts():
-    parser = argparse.ArgumentParser(description="TiDB Insight Scripts",
-            epilog="Note that some options would decrease system performance.")
-    parser.add_argument("-O", "--output", action="store", default=None,
-                        help="""The dir to store output data of TiDB Insight, any existing file
-                        will be overwritten without futher confirmation.""")
+    def get_lsof_tidb(self):
+        for proc in self.collector_data["proc_stats"]:
+            stdout, stderr = lsof.lsof(proc["pid"])
+            if stdout:
+                util.write_file(os.path.join(self.full_outdir, "lsof-%s") % proc["pid"],
+                                stdout)
+            if stderr:
+                util.write_file(os.path.join(self.full_outdir, "lsof-%s.err" % proc["pid"]),
+                                stderr)
 
-    parser.add_argument("-p", "--perf", action="store_true", default=False,
-                        help="Collect trace info with perf. Default is disabled.")
-    parser.add_argument("--pid", type=int, action="append", default=None,
-                        help="""PID of process to run perf on, if '-p/--perf' is not set, this
-                        value will be ignored and would not take any effection.
-                        Multiple PIDs can be set by using more than one --pid args.
-                        Default is None and means the whole system.""")
-    parser.add_argument("--tidb-proc", action="store_true", default=False,
-                        help="Collect perf data for PD/TiDB/TiKV processes instead of the whole system.")
-    parser.add_argument("--perf-exec", type=int, action="store", default=None,
-                        help="Custom path of perf executable file.")
-    parser.add_argument("--perf-freq", type=int, action="store", default=None,
-                        help="Event sampling frequency of perf-record, in Hz.")
-    parser.add_argument("--perf-time", type=int, action="store", default=None,
-                        help="Time period of perf recording, in seconds.")
-    
-    return parser.parse_args()
 
 if __name__ == "__main__":
     util.check_privilege()
-    insight = Insight()
 
     # WIP: add params to set output dir / overwriting on non-empty target dir
-    args = parse_opts()
+    args = util.parse_insight_opts()
+    insight = Insight()
     if args.output:
         insight.outdir = args.output
 
@@ -127,3 +121,5 @@ if __name__ == "__main__":
     insight.run_perf(args)
     # check size of data folder of TiDB processes
     insight.get_datadir_size()
+    # list files opened by TiDB processes
+    insight.get_lsof_tidb()

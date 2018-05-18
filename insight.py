@@ -82,6 +82,11 @@ class Insight():
         if not args.perf:
             return
 
+        # perf requires root priviledge
+        if not util.is_root_privilege():
+            logging.fatal("It's required to run perf with root priviledge.")
+            return
+
         # "--tidb-proc" has the highest priority
         if args.tidb_proc:
             # build dict of pid to process name
@@ -98,6 +103,12 @@ class Insight():
         self.insight_perf.run(self.full_outdir)
 
     def get_datadir_size(self):
+        # du requires root priviledge to check data-dir
+        if not util.is_root_privilege():
+            logging.fatal(
+                "It's required to check data-dir size with root priviledge.")
+            return
+
         for proc in self.collector_data["proc_stats"]:
             args = util.parse_cmdline(proc["cmd"])
             try:
@@ -116,6 +127,11 @@ class Insight():
                                      stderr)
 
     def get_lsof_tidb(self):
+        # lsof requires root priviledge
+        if not util.is_root_privilege():
+            logging.fatal("It's required to run lsof with root priviledge.")
+            return
+
         for proc in self.collector_data["proc_stats"]:
             stdout, stderr = lsof.lsof(proc["pid"])
             if stdout:
@@ -127,6 +143,10 @@ class Insight():
 
     def save_logfiles(self, args):
         if not args.log:
+            return
+        # reading logs requires root priviledge
+        if not util.is_root_privilege():
+            logging.fatal("It's required to read logs with root priviledge.")
             return
 
         self.insight_logfiles = logfiles.InsightLogFiles(options=args)
@@ -140,10 +160,18 @@ class Insight():
 
         self.insight_configfiles = configfiles.InsightConfigFiles(options=args)
         self.insight_configfiles.save_sysconf(outputdir=self.outdir)
+        # collect TiDB configs
+        proc_cmdline = self.format_proc_info("cmd")  # cmdline of process
+        self.insight_configfiles.save_tidb_configs(
+            proc_cmdline=proc_cmdline, outputdir=self.outdir)
 
 
 if __name__ == "__main__":
-    util.check_privilege()
+    if not util.is_root_privilege():
+        logging.warning("""Running TiDB Insight with non-superuser privilege may result
+        in lack of some information or data in the final output, if
+        you find certain data missing or empty in result, please try
+        to run this script again with root.""")
 
     # WIP: add params to set output dir / overwriting on non-empty target dir
     args = util.parse_insight_opts()

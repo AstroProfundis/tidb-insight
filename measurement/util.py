@@ -8,12 +8,8 @@ import os
 from subprocess import Popen, PIPE
 
 
-def check_privilege():
-    if os.getuid() != 0:
-        print("""Warning: Running TiDB Insight with non-superuser privilege may result
-         in lack of some information or data in the final output, if
-         you find certain data missing or empty in result, please try
-         to run this script again with root.""")
+def is_root_privilege():
+    return os.getuid() == 0
 
 
 # full directory path of this script
@@ -51,7 +47,7 @@ def parse_cmdline(cmdline):
 def parse_insight_opts():
     parser = argparse.ArgumentParser(description="TiDB Insight Scripts",
                                      epilog="Note that some options would decrease system performance.")
-    parser.add_argument("-O", "--output", action="store", default=None,
+    parser.add_argument("-o", "--output", action="store", default=None,
                         help="""The dir to store output data of TiDB Insight, any existing file
                         will be overwritten without futher confirmation.""")
 
@@ -73,7 +69,7 @@ def parse_insight_opts():
     parser.add_argument("-l", "--log", action="store_true", default=False,
                         help="Enable to include log files in output, PD/TiDB/TiKV logs are included by default.")
     parser.add_argument("--syslog", action="store_true", default=False,
-                        help="Enable to include system log in output, will be ignored if -l/--log is not set.")
+                        help="Enable to include system log in output, will be ignored if -l/--log is not set. This may significantly increase output size.")
     parser.add_argument("--config-file", action="store_true", default=False,
                         help="Enable to include various config files in output, disabled by default.")
 

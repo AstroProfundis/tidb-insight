@@ -36,14 +36,21 @@ class Insight():
     # data output dir
     outdir = "data"
     full_outdir = ""
+    alias = ""
 
     insight_perf = None
     insight_logfiles = None
     insight_configfiles = None
     insight_pdctl = None
 
-    def __init__(self, outdir=None):
-        self.full_outdir = fileutils.create_dir(self.outdir)
+    def __init__(self, args):
+        if args.output:
+            self.outdir = args.output
+        if not args.alias:
+            self.alias = util.get_hostname()
+        self.full_outdir = fileutils.create_dir(
+            os.path.join(self.outdir, self.alias))
+        logging.debug("Output directory is: %s" % self.full_outdir)
 
     # data collected by `collector`
     collector_data = {}
@@ -72,11 +79,11 @@ class Insight():
 
         stdout, stderr = util.run_cmd(collector_exec)
         if stderr:
-            logging.warning(str(stderr))
+            logging.info("collector output:" % str(stderr))
         try:
             self.collector_data = json.loads(stdout)
         except json.JSONDecodeError:
-            # TODO: unified output: "Error collecting system info.\n%s" % stderr
+            logging.critical("Error collecting system info:\n%s" % stderr)
             return
 
         # save various info to seperate .json files
@@ -86,6 +93,7 @@ class Insight():
 
     def run_perf(self, args):
         if not args.perf:
+            logging.debug("Ignoring collecting of perf data.")
             return
 
         # perf requires root priviledge
@@ -120,6 +128,8 @@ class Insight():
             try:
                 data_dir = args["data-dir"]
             except KeyError:
+                logging.debug(
+                    "'data-dir' is not set in cmdline args: %s" % args)
                 continue
             if os.listdir(data_dir) != []:
                 stdout, stderr = space.du_subfiles(data_dir)
@@ -149,6 +159,7 @@ class Insight():
 
     def save_logfiles(self, args):
         if not args.log:
+            logging.debug("Ignoring collecting of log files.")
             return
         # reading logs requires root priviledge
         if not util.is_root_privilege():
@@ -157,11 +168,16 @@ class Insight():
 
         self.insight_logfiles = logfiles.InsightLogFiles(options=args)
         proc_cmdline = self.format_proc_info("cmd")  # cmdline of process
-        self.insight_logfiles.save_logfiles(
-            proc_cmdline=proc_cmdline, outputdir=self.outdir)
+        if args.log_auto:
+            self.insight_logfiles.save_logfiles_auto(
+                proc_cmdline=proc_cmdline, outputdir=self.outdir)
+        else:
+            self.insight_logfiles.save_tidb_logfiles(outputdir=self.outdir)
+        self.insight_logfiles.save_system_log(outputdir=self.outdir)
 
     def save_configs(self, args):
         if not args.config_file:
+            logging.debug("Ignoring collecting of config files.")
             return
 
         self.insight_configfiles = configfiles.InsightConfigFiles(options=args)
@@ -185,9 +201,11 @@ if __name__ == "__main__":
 
     # WIP: add params to set output dir / overwriting on non-empty target dir
     args = util.parse_insight_opts()
-    insight = Insight()
-    if args.output:
-        insight.outdir = args.output
+    if args.verbose:
+        logging.basicConfig(level=logging.DEBUG)
+        logging.debug("Debug logging enabled.")
+
+    insight = Insight(args)
 
     insight.collector()
     # WIP: call scripts that collect metrics of the node

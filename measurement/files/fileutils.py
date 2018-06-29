@@ -29,7 +29,7 @@ def write_file(filename, data):
 # create target directory, do nothing if it already exists
 def create_dir(path):
     try:
-        os.mkdir(path)
+        os.makedirs(path)
         return path
     except OSError as e:
         # There is FileExistsError (devided from OSError) in Python 3.3+,
@@ -37,6 +37,7 @@ def create_dir(path):
         # dir already exists.
         import errno
         if e.errno == errno.EEXIST and os.path.isdir(path):
+            logging.info("Target path \"%s\" already exists." % path)
             return path
         else:
             logging.fatal("Can not prepare output dir, error is: %s" % str(e))
@@ -55,3 +56,18 @@ def build_full_output_dir(basedir=None, subdir=None):
     else:
         # full path of basedir/subdir
         return create_dir(os.path.join(basedir, subdir))
+
+
+def compress_tarball(output_base=None, output_name=None):
+    # compress output files to tarball
+    os.chdir(output_base)
+    cmd = ["tar",
+           "--remove-files",
+           "-zcf",
+           "%s.tar.gz" % output_name,
+           output_name]
+    stdout, stderr = util.run_cmd(cmd)
+    if not stderr and stderr != '':
+        logging.info("tar stderr: %s" % stderr)
+    if not stdout and stdout != '':
+        logging.debug("tar output: %s" % stdout)

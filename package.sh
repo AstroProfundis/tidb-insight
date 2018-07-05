@@ -27,7 +27,7 @@ export GOROOT GOPATH
 
 # clean exist binaries
 rm -rf ${BUILD_ROOT}/tidb-insight-*
-mkdir -p ${BUILD_ROOT}/${RELPATH}/
+mkdir -p ${BUILD_ROOT}/${RELPATH}/bin
 cp -rf ${BUILD_ROOT}/../* ${BUILD_ROOT}/${RELPATH}/
 
 cd ${BUILD_ROOT}/${RELPATH}/collector/

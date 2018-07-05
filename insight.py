@@ -31,9 +31,11 @@ from measurement.files import fileutils
 from measurement.files import logfiles
 from measurement.process import meta as proc_meta
 from measurement.tidb import pdctl
+from measurement.ftrace import ftrace
 
 
 class Insight():
+    cwd = util.cwd()
     # data output dir
     outdir = "data"
     full_outdir = ""
@@ -43,14 +45,21 @@ class Insight():
     insight_logfiles = None
     insight_configfiles = None
     insight_pdctl = None
+    insight_trace = None
 
     def __init__(self, args):
-        if args.output:
-            self.outdir = args.output
-        if not args.alias:
+        if args.alias:
+            self.alias = args.alias
+        else:
             self.alias = util.get_hostname()
-        self.full_outdir = fileutils.create_dir(
-            os.path.join(self.outdir, self.alias))
+
+        if args.output and util.is_abs_path(args.output):
+            self.outdir = args.output
+            self.full_outdir = fileutils.create_dir(
+                os.path.join(self.outdir, self.alias))
+        else:
+            self.full_outdir = fileutils.create_dir(
+                os.path.join(self.cwd, self.outdir, self.alias))
         logging.debug("Output directory is: %s" % self.full_outdir)
 
     # data collected by `collector`
@@ -108,14 +117,40 @@ class Insight():
             perf_proc = self.format_proc_info("name")
             self.insight_perf = perf.InsightPerf(perf_proc, args)
         # parse pid list
-        elif len(args.pid) > 0:
+        elif args.pid:
             perf_proc = {}
             for _pid in args.pid:
+                perf_proc[_pid] = None
+            self.insight_perf = perf.InsightPerf(perf_proc, args)
+        # find process by port
+        elif args.proc_listen_port:
+            perf_proc = {}
+            pid_list = proc_meta.find_process_by_port(
+                args.proc_listen_port, args.proc_listen_proto)
+            if not pid_list or len(pid_list) < 1:
+                return
+            for _pid in pid_list:
                 perf_proc[_pid] = None
             self.insight_perf = perf.InsightPerf(perf_proc, args)
         else:
             self.insight_perf = perf.InsightPerf(options=args)
         self.insight_perf.run(self.full_outdir)
+
+    def run_ftrace(self, args):
+        if not args.ftrace:
+            logging.debug("Ignoring collecting of ftrace data.")
+            return
+        # perf requires root priviledge
+        if not util.is_root_privilege():
+            logging.fatal("It's required to run ftrace with root priviledge.")
+            return
+
+        if args.ftracepoint:
+            self.insight_ftrace = ftrace.InsightFtrace(self.cwd, args)
+            self.insight_ftrace.run(self.full_outdir)
+        else:
+            logging.debug("Ignoring collecting of ftrace data, no tracepoint is chose.")
+
 
     def get_datadir_size(self):
         # du requires root priviledge to check data-dir
@@ -164,17 +199,18 @@ class Insight():
             return
         # reading logs requires root priviledge
         if not util.is_root_privilege():
-            logging.fatal("It's required to read logs with root priviledge.")
-            return
+            logging.warn("It's required to read logs with root priviledge.")
+            #return
 
         self.insight_logfiles = logfiles.InsightLogFiles(options=args)
-        proc_cmdline = self.format_proc_info("cmd")  # cmdline of process
         if args.log_auto:
+            proc_cmdline = self.format_proc_info("cmd")  # cmdline of process
             self.insight_logfiles.save_logfiles_auto(
-                proc_cmdline=proc_cmdline, outputdir=self.outdir)
+                proc_cmdline=proc_cmdline, outputdir=self.full_outdir)
         else:
-            self.insight_logfiles.save_tidb_logfiles(outputdir=self.outdir)
-        self.insight_logfiles.save_system_log(outputdir=self.outdir)
+            self.insight_logfiles.save_tidb_logfiles(
+                outputdir=self.full_outdir)
+        self.insight_logfiles.save_system_log(outputdir=self.full_outdir)
 
     def save_configs(self, args):
         if not args.config_file:
@@ -183,14 +219,15 @@ class Insight():
 
         self.insight_configfiles = configfiles.InsightConfigFiles(options=args)
         if args.config_sysctl:
-            self.insight_configfiles.save_sysconf(outputdir=self.outdir)
+            self.insight_configfiles.save_sysconf(outputdir=self.full_outdir)
         # collect TiDB configs
         if args.config_auto:
             proc_cmdline = self.format_proc_info("cmd")  # cmdline of process
             self.insight_configfiles.save_configs_auto(
-                proc_cmdline=proc_cmdline, outputdir=self.outdir)
+                proc_cmdline=proc_cmdline, outputdir=self.full_outdir)
         else:
-            self.insight_configfiles.save_tidb_configs(outputdir=self.outdir)
+            self.insight_configfiles.save_tidb_configs(
+                outputdir=self.full_outdir)
 
     def read_pdctl(self, args):
         self.insight_pdctl = pdctl.PDCtl(host=args.pd_host, port=args.pd_port)
@@ -212,20 +249,26 @@ if __name__ == "__main__":
 
     insight = Insight(args)
 
-    insight.collector()
+    if (args.log_auto or args.config_auto):
+        insight.collector()
+        # check size of data folder of TiDB processes
+        insight.get_datadir_size()
+        # list files opened by TiDB processes
+        insight.get_lsof_tidb()
     # WIP: call scripts that collect metrics of the node
     insight.run_perf(args)
-    # check size of data folder of TiDB processes
-    insight.get_datadir_size()
-    # list files opened by TiDB processes
-    insight.get_lsof_tidb()
     # save log files
     insight.save_logfiles(args)
     # save config files
     insight.save_configs(args)
-    # read and save `pd-ctl` info
-    insight.read_pdctl(args)
+
+    if args.pdctl:
+        # read and save `pd-ctl` info
+        insight.read_pdctl(args)
+
+    # save ftrace data
+    insight.run_ftrace(args)
 
     # compress all output to tarball
     if args.compress:
-        fileutils.compress_tarball(insight.full_outdir, insight.alias)
+        fileutils.compress_tarball(insight.outdir, insight.alias)

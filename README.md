@@ -2,6 +2,7 @@
 
 [![Build Status](https://travis-ci.org/AstroProfundis/tidb-insight.svg?branch=raw)](https://travis-ci.org/AstroProfundis/tidb-insight)
 [![Go Report Card](https://goreportcard.com/badge/github.com/AstroProfundis/tidb-insight)](https://goreportcard.com/report/github.com/AstroProfundis/tidb-insight)
+[![PEP8](https://img.shields.io/badge/code%20style-pep8-blue.svg)](https://www.python.org/dev/peps/pep-0008/)
 
 TiDB Insight is a set of tools and/or scripts to collect information and metrics from all nodes of a TiDB cluster. The data is collected and archived to a tarball so that one can copy the data anywhere for further investigation.
 

@@ -88,7 +88,8 @@ class InsightConfigFiles():
 
         # the full path of output directory
         output_name = "%s_%s" % (file_prefix, self.config_options.alias)
-        output_dir = os.path.join(output_base, output_name)
+        output_dir = fileutils.build_full_output_dir(
+            basedir=os.path.join(output_base, output_name), subdir=self.config_dir)
 
         file_list = list_config_files(source_dir, file_prefix)
         for file in file_list:

@@ -23,30 +23,34 @@ import logging
 import os
 import time
 
-from measurement import lsof
-from measurement import perf
-from measurement import space
-from measurement import util
-from measurement.files import configfiles
-from measurement.files import fileutils
-from measurement.files import logfiles
-from measurement.process import meta as proc_meta
-from measurement.tidb import pdctl
-from measurement.ftrace import ftrace
+from file import configfiles
+from file import logfiles
+from metric import prometheus
+from runtime import perf
+from tidb import pdctl
+from utils import fileopt
+from utils import lsof
+from utils import space
+from utils import util
+
+from runtime.ftrace import ftrace
+from utils.process import meta as proc_meta
 
 
 class Insight():
     cwd = util.cwd()
     # data output dir
     outdir = "data"
-    full_outdir = ""
     alias = ""
+    # data collected by `collector`
+    collector_data = {}
 
     insight_perf = None
     insight_logfiles = None
     insight_configfiles = None
     insight_pdctl = None
     insight_trace = None
+    insight_metric = None
 
     def __init__(self, args):
         if args.alias:
@@ -56,21 +60,20 @@ class Insight():
 
         if args.output and util.is_abs_path(args.output):
             self.outdir = args.output
-            self.full_outdir = fileutils.create_dir(
+            self.full_outdir = fileopt.create_dir(
                 os.path.join(self.outdir, self.alias))
         else:
-            self.full_outdir = fileutils.create_dir(
+            if args.output:
+                self.outdir = args.output
+            self.full_outdir = fileopt.create_dir(
                 os.path.join(self.cwd, self.outdir, self.alias))
         logging.debug("Output directory is: %s" % self.full_outdir)
 
-    # data collected by `collector`
-    collector_data = {}
-
     # parse process info in collector_data and build required dict
     def format_proc_info(self, keyname=None):
-        if not keyname:
-            return None
         result = {}
+        if not keyname:
+            return result
         for proc in self.collector_data["proc_stats"]:
             try:
                 result[proc["pid"]] = proc[keyname]
@@ -85,7 +88,7 @@ class Insight():
         # call `collector` and store data to output dir
         base_dir = os.path.join(util.pwd(), "../")
         collector_exec = os.path.join(base_dir, "bin/collector")
-        collector_outdir = fileutils.create_dir(
+        collector_outdir = fileopt.create_dir(
             os.path.join(self.full_outdir, "collector"))
 
         stdout, stderr = util.run_cmd(collector_exec)
@@ -99,54 +102,51 @@ class Insight():
 
         # save various info to seperate .json files
         for k, v in self.collector_data.items():
-            fileutils.write_file(os.path.join(collector_outdir, "%s.json" % k),
-                                 json.dumps(v, indent=2))
+            fileopt.write_file(os.path.join(collector_outdir, "%s.json" % k),
+                               json.dumps(v, indent=2))
 
     def run_vmtouch(self, args):
-        if not args.vmtouch:
+        if args.subcmd_runtime != "vmtouch":
             logging.debug("Ingoring collecting of vmtouch data.")
             return
-        if not args.vmtouch_target:
+        if not args.target:
             return
 
         base_dir = os.path.join(util.pwd(), "../")
         vmtouch_exec = os.path.join(base_dir, "bin/vmtouch")
-        vmtouch_outdir = fileutils.create_dir(
+        vmtouch_outdir = fileopt.create_dir(
             os.path.join(self.full_outdir, "vmtouch"))
         if not vmtouch_outdir:
             return
 
         stdout, stderr = util.run_cmd(
-            [vmtouch_exec, "-v", args.vmtouch_target])
+            [vmtouch_exec, "-v", args.target])
         if stderr:
-            logging.info("vmtouch output:" % str(stderr))
+            logging.info("vmtouch output: %s" % str(stderr))
             return
-        fileutils.write_file(os.path.join(vmtouch_outdir, "%s_%d.txt" % (
-            args.vmtouch_target.replace("/", "_"), (time.time() * 1000))), str(stdout))
+        fileopt.write_file(os.path.join(vmtouch_outdir, "%s_%d.txt" % (
+            args.target.replace("/", "_"), (time.time() * 1000))), str(stdout))
 
     def run_blktrace(self, args):
-        if not args.blktrace:
+        if args.subcmd_runtime != "blktrace":
             logging.debug("Ingoring collecting of blktrace data.")
             return
-        if not args.blktrace_target:
+        if not args.target:
             return
 
-        blktrace_outdir = fileutils.create_dir(
+        blktrace_outdir = fileopt.create_dir(
             os.path.join(self.full_outdir, "blktrace"))
         if not blktrace_outdir:
             return
 
         time = 60
-        if args.blktrace_time:
-            time = args.blktrace_time
-        _, stderr = util.run_cmd_for_a_while(
-            ["blktrace", "-d", args.blktrace_target, "-D", blktrace_outdir], time)
-        if stderr:
-            logging.info("blktrace output:" % str(stderr))
-            return
+        if args.time:
+            time = args.time
+        util.run_cmd_for_a_while(
+            ["blktrace", "-d", args.target, "-D", blktrace_outdir], time)
 
     def run_perf(self, args):
-        if not args.perf:
+        if args.subcmd_runtime != "perf":
             logging.debug("Ignoring collecting of perf data.")
             return
 
@@ -155,33 +155,30 @@ class Insight():
             logging.fatal("It's required to run perf with root priviledge.")
             return
 
-        # "--tidb-proc" has the highest priority
-        if args.tidb_proc:
+        # "--auto" has the highest priority
+        if args.auto:
             # build dict of pid to process name
             perf_proc = self.format_proc_info("name")
-            self.insight_perf = perf.InsightPerf(perf_proc, args)
         # parse pid list
         elif args.pid:
             perf_proc = {}
             for _pid in args.pid:
                 perf_proc[_pid] = None
-            self.insight_perf = perf.InsightPerf(perf_proc, args)
         # find process by port
-        elif args.proc_listen_port:
+        elif args.listen_port:
             perf_proc = {}
             pid_list = proc_meta.find_process_by_port(
-                args.proc_listen_port, args.proc_listen_proto)
+                args.listen_port, args.listen_proto)
             if not pid_list or len(pid_list) < 1:
                 return
             for _pid in pid_list:
                 perf_proc[_pid] = None
-            self.insight_perf = perf.InsightPerf(perf_proc, args)
-        else:
-            self.insight_perf = perf.InsightPerf(options=args)
-        self.insight_perf.run(self.full_outdir)
+        self.insight_perf = perf.Perf(
+            args, self.full_outdir, 'perfdata', perf_proc)
+        self.insight_perf.run_collecting()
 
     def run_ftrace(self, args):
-        if not args.ftrace:
+        if args.subcmd_runtime != "ftrace":
             logging.debug("Ignoring collecting of ftrace data.")
             return
         # perf requires root priviledge
@@ -190,8 +187,9 @@ class Insight():
             return
 
         if args.ftracepoint:
-            self.insight_ftrace = ftrace.InsightFtrace(self.cwd, args)
-            self.insight_ftrace.run(self.full_outdir)
+            self.insight_ftrace = ftrace.Ftrace(
+                args, self.full_outdir, 'ftracedata', self.cwd)
+            self.insight_ftrace.run_collecting()
         else:
             logging.debug(
                 "Ignoring collecting of ftrace data, no tracepoint is chose.")
@@ -216,11 +214,11 @@ class Insight():
             else:
                 stdout, stderr = space.du_total(data_dir)
             if stdout:
-                fileutils.write_file(os.path.join(self.full_outdir, "size-%s" % proc["pid"]),
-                                     stdout)
+                fileopt.write_file(os.path.join(self.full_outdir, "size-%s" % proc["pid"]),
+                                   stdout)
             if stderr:
-                fileutils.write_file(os.path.join(self.full_outdir, "size-%s.err" % proc["pid"]),
-                                     stderr)
+                fileopt.write_file(os.path.join(self.full_outdir, "size-%s.err" % proc["pid"]),
+                                   stderr)
 
     def get_lsof_tidb(self):
         # lsof requires root priviledge
@@ -231,51 +229,47 @@ class Insight():
         for proc in self.collector_data["proc_stats"]:
             stdout, stderr = lsof.lsof(proc["pid"])
             if stdout:
-                fileutils.write_file(os.path.join(self.full_outdir, "lsof-%s") % proc["pid"],
-                                     stdout)
+                fileopt.write_file(os.path.join(self.full_outdir, "lsof-%s") % proc["pid"],
+                                   stdout)
             if stderr:
-                fileutils.write_file(os.path.join(self.full_outdir, "lsof-%s.err" % proc["pid"]),
-                                     stderr)
+                fileopt.write_file(os.path.join(self.full_outdir, "lsof-%s.err" % proc["pid"]),
+                                   stderr)
 
     def save_logfiles(self, args):
-        if not args.log:
-            logging.debug("Ignoring collecting of log files.")
-            return
         # reading logs requires root priviledge
         if not util.is_root_privilege():
             logging.warn("It's required to read logs with root priviledge.")
             # return
 
-        self.insight_logfiles = logfiles.InsightLogFiles(options=args)
-        if args.log_auto:
+        self.insight_logfiles = logfiles.InsightLogFiles(
+            args, self.full_outdir, 'logs')
+        proc_cmdline = None
+        if args.auto:
             proc_cmdline = self.format_proc_info("cmd")  # cmdline of process
-            self.insight_logfiles.save_logfiles_auto(
-                proc_cmdline=proc_cmdline, outputdir=self.full_outdir)
-        else:
-            self.insight_logfiles.save_tidb_logfiles(
-                outputdir=self.full_outdir)
-        self.insight_logfiles.save_system_log(outputdir=self.full_outdir)
+        self.insight_logfiles.run_collecting(proc_cmdline)
 
     def save_configs(self, args):
-        if not args.config_file:
-            logging.debug("Ignoring collecting of config files.")
-            return
-
-        self.insight_configfiles = configfiles.InsightConfigFiles(options=args)
-        if args.config_sysctl:
-            self.insight_configfiles.save_sysconf(outputdir=self.full_outdir)
+        self.insight_configfiles = configfiles.InsightConfigFiles(
+            args, self.full_outdir, 'configs')
         # collect TiDB configs
-        if args.config_auto:
+        proc_cmdline = None
+        if args.auto:
             proc_cmdline = self.format_proc_info("cmd")  # cmdline of process
-            self.insight_configfiles.save_configs_auto(
-                proc_cmdline=proc_cmdline, outputdir=self.full_outdir)
-        else:
-            self.insight_configfiles.save_tidb_configs(
-                outputdir=self.full_outdir)
+        self.insight_configfiles.run_collecting(proc_cmdline)
 
     def read_pdctl(self, args):
-        self.insight_pdctl = pdctl.PDCtl(host=args.pd_host, port=args.pd_port)
-        self.insight_pdctl.save_info(self.full_outdir)
+        if args.subcmd_tidb != "pdctl":
+            logging.debug("Ignoring collecting of PD API.")
+        self.insight_pdctl = pdctl.PDCtl(
+            args, self.full_outdir, 'pdctl', host=args.host, port=args.port)
+        self.insight_pdctl.run_collecting()
+
+    def dump_metric(self, args):
+        if args.subcmd_metric == "prom":
+            self.insight_metric = prometheus.PromMetrics(
+                args, self.full_outdir, 'metric/prometheus')
+            self.insight_metric.run_collecting()
+        pass
 
 
 if __name__ == "__main__":
@@ -290,35 +284,53 @@ if __name__ == "__main__":
     if args.verbose:
         logging.basicConfig(level=logging.DEBUG)
         logging.debug("Debug logging enabled.")
+        logging.debug("Input arguments are: %s" % args)
 
     insight = Insight(args)
 
-    if (args.log_auto or args.config_auto):
-        insight.collector()
-        # check size of data folder of TiDB processes
-        insight.get_datadir_size()
-        # list files opened by TiDB processes
-        insight.get_lsof_tidb()
-    elif args.collector:
-        insight.collector()
-    # WIP: call scripts that collect metrics of the node
-    insight.run_perf(args)
-    # save log files
-    insight.save_logfiles(args)
-    # save config files
-    insight.save_configs(args)
+    try:
+        if args.auto:
+            logging.debug(
+                "In auto mode, basic information is collected by default.")
+            insight.collector()
+            # check size of data folder of TiDB processes
+            insight.get_datadir_size()
+            # list files opened by TiDB processes
+            insight.get_lsof_tidb()
+    except AttributeError:
+        logging.debug("Auto mode not detected and disabled.")
+        pass
 
-    if args.pdctl:
+    if args.subcmd == "system" and args.collector:
+        insight.collector()
+
+    # WIP: call scripts that collect metrics of the node
+    if args.subcmd == "runtime":
+        insight.run_perf(args)
+        # save ftrace data
+        insight.run_ftrace(args)
+        # save vmtouch data
+        insight.run_vmtouch(args)
+        # save blktrace data
+        insight.run_blktrace(args)
+
+    # save log files
+    if args.subcmd == "log":
+        insight.save_logfiles(args)
+    # save config files
+    if args.subcmd == "config":
+        insight.save_configs(args)
+
+    if args.subcmd == "tidb":
         # read and save `pd-ctl` info
         insight.read_pdctl(args)
 
-    # save ftrace data
-    insight.run_ftrace(args)
-    # save vmtouch data
-    insight.run_vmtouch(args)
-    # save blktrace data
-    insight.run_blktrace(args)
+    if args.subcmd == "metric":
+        insight.dump_metric(args)
 
     # compress all output to tarball
-    if args.compress:
-        fileutils.compress_tarball(insight.outdir, insight.alias)
+    if args.subcmd == "archive":
+        if args.extract:
+            fileopt.decompress_tarball_recursive(args.dir, args.output)
+        else:
+            fileopt.compress_tarball(insight.outdir, insight.alias)

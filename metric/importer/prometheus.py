@@ -52,7 +52,7 @@ class PromDump():
             return f_list
 
         for file in file_list(self.datadir):
-            if file.endswith('.json'):
+            if file.endswith('.json') and 'prometheus' in file:
                 raw = fileopt.read_file(file)
             elif file.endswith('.dat'):
                 raw = zlib.decompress(fileopt.read_file(file, 'rb'))

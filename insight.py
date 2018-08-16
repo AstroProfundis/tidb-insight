@@ -292,6 +292,13 @@ if __name__ == "__main__":
           you find certain data missing or empty in result, please try
           to run this script again with root.""")
 
+    # re-import dumped data
+    if args.subcmd == 'metric' and args.subcmd_metric == "load":
+        from metric.importer import prometheus as import_prom
+        insight_importer = import_prom.PromDump(args)
+        insight_importer.run_importing()
+        exit(0)
+
     insight = Insight(args)
 
     try:

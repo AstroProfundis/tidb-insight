@@ -5,13 +5,13 @@
 # for futher analysis.
 
 import datetime
-import influxdb
 import json
 import logging
 import os
 import random
 import string
-import zlib
+
+import multiprocessing as mp
 
 from utils import fileopt
 from utils import util
@@ -26,6 +26,8 @@ class PromDump():
         self.db_name = args.db if args.db else self.unique_dbname()
         self.user = args.user
         self.passwd = args.passwd
+        self.proc_num = args.proc_num if args.proc_num else int(
+            mp.cpu_count() + 1)
 
     # unique_dbname() generates a unique database name for importing, to prevents
     # overwritting of previous imported data
@@ -41,7 +43,42 @@ class PromDump():
 
         return '_'.join(dbname)
 
-    def load_dump(self):
+    def exec_importer(self, file=None, chunk_size=2000):
+        if not file:
+            logging.fatal("No file specified.")
+            return (None, "No metric dump file specified to load.")
+        base_dir = os.path.join(util.pwd(), "../")
+        importer = os.path.join(base_dir, "bin/prom2influx")
+        cmd = [importer,
+               "-db", self.db_name,
+               "-host", self.host,
+               "-port", "%s" % self.port,
+               "-chunk", "%s" % chunk_size,  # chunk size of one write request
+               "-file", file
+               ]
+        logging.debug("Running cmd: %s" % ' '.join(cmd))
+        return util.run_cmd(cmd)
+
+    def importer_worker(self, filename):
+        # all dumped files are in 'prometheus' sub-directory
+        if not filename or not filename.endswith('.json') or 'prometheus' not in filename:
+            return
+        stderr = self.exec_importer(filename)[1]
+        if stderr and "Request Entity Too Large" in stderr.decode('utf-8'):
+            logging.info("Write to DB failed, retry for once...")
+            retry_stderr = self.exec_importer(filename, chunk_size=100)[1]
+            if not retry_stderr:
+                logging.info("Retry succeeded.")
+            else:
+                logging.warning("Retry failed, stderr is: '%s'" %
+                                retry_stderr)
+        elif stderr:
+            logging.warning(stderr)
+
+    def run_importing(self):
+        logging.info("Metrics will be imported to database '%s'." %
+                     self.db_name)
+
         def file_list(dir=None):
             f_list = []
             for file in fileopt.list_dir(dir):
@@ -51,59 +88,14 @@ class PromDump():
                     f_list.append(file)
             return f_list
 
-        for file in file_list(self.datadir):
-            if file.endswith('.json') and 'prometheus' in file:
-                raw = fileopt.read_file(file)
-            elif file.endswith('.dat'):
-                raw = zlib.decompress(fileopt.read_file(file, 'rb'))
-            else:
-                logging.debug("Skipped unrecorgnized file '%s'" % file)
-                continue
-            yield json.loads(raw)
+        pool = mp.Pool(self.proc_num)
+        files = file_list(self.datadir)
+        pool.map_async(unwrap_self_f, zip([self] * len(files), files))
+        pool.close()
+        pool.join()
 
-    def build_series(self):
-        def format_prom_metric(key=None):
-            points = []
-            point = {'fields': {}}
-            # build point header
-            for metric in key:
-                point['measurement'] = metric['metric']['__name__']
-                point['tags'] = {
-                    'cluster': self.db_name,
-                    'monitor': 'prometheus',
-                }
-                for k, v in metric['metric'].items():
-                    point['tags'][k] = v
-                # build point values
-                for value in metric['values']:
-                    point['time'] = datetime.datetime.utcfromtimestamp(
-                        value[0]).strftime('%Y-%m-%dT%H:%M:%SZ')
-                    try:
-                        point['fields']['value'] = float(value[1])
-                    except ValueError:
-                        point['fields']['value'] = value[1]
-                    points.append(point.copy())
-            return points
 
-        for key in self.load_dump():
-            yield format_prom_metric(key)
-
-    def write2influxdb(self):
-        client = influxdb.InfluxDBClient(
-            host=self.host, port=self.port, username=self.user, password=self.passwd,
-            database=self.db_name, timeout=30)
-        # create_database has no effect if the database already exist
-        client.create_database(self.db_name)
-        logging.info("Metrics will be imported to database '%s'." %
-                     self.db_name)
-
-        for series in self.build_series():
-            try:
-                client.write_points(series, batch_size=2000)
-            except influxdb.exceptions.InfluxDBClientError as e:
-                logging.warn(
-                    "Write error for key '%s', data may be empty." % series[0]['measurement'])
-                logging.debug(e)
-
-    def run_importing(self):
-        self.write2influxdb()
+# a trick to use multiprocessing.Pool inside a class
+# see http://www.rueckstiess.net/research/snippets/show/ca1d7d90 for details
+def unwrap_self_f(arg, **kwarg):
+    return PromDump.importer_worker(*arg, **kwarg)

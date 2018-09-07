@@ -21,6 +21,7 @@ def read_file(filename, mode='r'):
 # write data to file
 def write_file(filename, data, mode='w'):
     with open(filename, mode) as f:
+        logging.debug("Writting %s of data to %s" % (len(data), filename))
         try:
             f.write(str(data, 'utf-8'))
         except TypeError:
@@ -62,7 +63,7 @@ def list_dir(path):
         # There is PermissionError in Python 3.3+, but only OSError in Python 2
         import errno
         if e.errno == errno.EACCES or e.errno == errno.EPERM:
-            logging.warn("Permission Denied reading %s" % path)
+            logging.warning("Permission Denied reading %s" % path)
         elif e.errno == errno.ENOENT:
             # when a process just exited
             pass

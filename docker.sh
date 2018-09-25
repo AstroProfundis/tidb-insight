@@ -18,7 +18,7 @@ case $1 in
         fi
         $SUDO docker-compose up -d
 
-        # if datasource "test-cluster" doesn't exist, this is a new Grafana instahce,
+        # if datasource "test-cluster" doesn't exist, this is a new Grafana instance,
         # and we'll going to initial its configs
         echo "Wait 30s for Grafana to finish startup..."
         sleep 30 # wail Grafana to startup
